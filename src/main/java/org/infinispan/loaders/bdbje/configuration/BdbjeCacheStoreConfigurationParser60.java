@@ -1,13 +1,13 @@
 package org.infinispan.loaders.bdbje.configuration;
 
 import org.infinispan.configuration.cache.ConfigurationBuilder;
-import org.infinispan.configuration.cache.LoadersConfigurationBuilder;
+import org.infinispan.configuration.cache.PersistenceConfigurationBuilder;
 import org.infinispan.configuration.parsing.ConfigurationBuilderHolder;
 import org.infinispan.configuration.parsing.ConfigurationParser;
 import org.infinispan.configuration.parsing.Namespace;
 import org.infinispan.configuration.parsing.Namespaces;
 import org.infinispan.configuration.parsing.ParseUtils;
-import org.infinispan.configuration.parsing.Parser52;
+import org.infinispan.configuration.parsing.Parser60;
 import org.infinispan.configuration.parsing.XMLExtendedStreamReader;
 
 import javax.xml.stream.XMLStreamConstants;
@@ -24,7 +24,7 @@ import static org.infinispan.commons.util.StringPropertyReplacer.replaceProperti
  */
 @Namespaces({
    @Namespace(uri = "urn:infinispan:config:bdbje:6.0", root = "bdbjeStore"),
-   @Namespace(root = "remoteStore"),
+   @Namespace(root = "bdbjeStore"),
 })
 public class BdbjeCacheStoreConfigurationParser60 implements ConfigurationParser {
    public BdbjeCacheStoreConfigurationParser60() {
@@ -38,7 +38,7 @@ public class BdbjeCacheStoreConfigurationParser60 implements ConfigurationParser
       Element element = Element.forName(reader.getLocalName());
       switch (element) {
       case BDBJE_STORE: {
-         parseBdbjeStore(reader, builder.loaders(), holder.getClassLoader());
+         parseBdbjeStore(reader, builder.persistence(), holder.getClassLoader());
          break;
       }
       default: {
@@ -47,13 +47,13 @@ public class BdbjeCacheStoreConfigurationParser60 implements ConfigurationParser
       }
    }
 
-   private void parseBdbjeStore(final XMLExtendedStreamReader reader, LoadersConfigurationBuilder loadersBuilder,
+   private void parseBdbjeStore(final XMLExtendedStreamReader reader, PersistenceConfigurationBuilder loadersBuilder,
          ClassLoader classLoader) throws XMLStreamException {
       BdbjeCacheStoreConfigurationBuilder builder = new BdbjeCacheStoreConfigurationBuilder(loadersBuilder);
       parseBdbjeStoreAttributes(reader, builder);
 
       while (reader.hasNext() && (reader.nextTag() != XMLStreamConstants.END_ELEMENT)) {
-         Parser52.parseCommonStoreChildren(reader, builder);
+         Parser60.parseCommonStoreChildren(reader, builder);
       }
       loadersBuilder.addStore(builder);
    }
@@ -63,7 +63,8 @@ public class BdbjeCacheStoreConfigurationParser60 implements ConfigurationParser
       for (int i = 0; i < reader.getAttributeCount(); i++) {
          ParseUtils.requireNoNamespaceAttribute(reader, i);
          String value = replaceProperties(reader.getAttributeValue(i));
-         Attribute attribute = Attribute.forName(reader.getAttributeLocalName(i));
+         String attrName = reader.getAttributeLocalName(i);
+         Attribute attribute = Attribute.forName(attrName);
          switch (attribute) {
          case CACHE_DB_NAME_PREFIX: {
             builder.cacheDbNamePrefix(value);
@@ -94,7 +95,7 @@ public class BdbjeCacheStoreConfigurationParser60 implements ConfigurationParser
             break;
          }
          default: {
-            Parser52.parseCommonStoreAttributes(reader, i, builder);
+            Parser60.parseCommonStoreAttributes(reader, builder, attrName, value, i);
             break;
          }
          }

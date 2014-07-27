@@ -3,12 +3,13 @@ package org.infinispan.loaders.bdbje;
 import com.sleepycat.bind.EntryBinding;
 import com.sleepycat.je.DatabaseEntry;
 import com.sleepycat.util.RuntimeExceptionWrapper;
-import org.infinispan.container.entries.InternalCacheEntry;
+
 import org.infinispan.commons.marshall.StreamingMarshaller;
+import org.infinispan.marshall.core.MarshalledEntry;
 
 import java.io.IOException;
 
-class InternalCacheEntryBinding implements EntryBinding<InternalCacheEntry> {
+class InternalCacheEntryBinding implements EntryBinding<MarshalledEntry> {
    StreamingMarshaller m;
 
    InternalCacheEntryBinding(StreamingMarshaller m) {
@@ -16,9 +17,9 @@ class InternalCacheEntryBinding implements EntryBinding<InternalCacheEntry> {
    }
 
    @Override
-   public InternalCacheEntry entryToObject(DatabaseEntry entry) {
+   public MarshalledEntry entryToObject(DatabaseEntry entry) {
       try {
-         return (InternalCacheEntry) m.objectFromByteBuffer(entry.getData());
+         return (MarshalledEntry) m.objectFromByteBuffer(entry.getData());
       } catch (IOException e) {
          throw new RuntimeExceptionWrapper(e);
       } catch (ClassNotFoundException e) {
@@ -27,7 +28,7 @@ class InternalCacheEntryBinding implements EntryBinding<InternalCacheEntry> {
    }
 
    @Override
-   public void objectToEntry(InternalCacheEntry object, DatabaseEntry entry) {
+   public void objectToEntry(MarshalledEntry object, DatabaseEntry entry) {
       byte[] b;
       try {
          b = m.objectToByteBuffer(object);

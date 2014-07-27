@@ -1,42 +1,37 @@
 package org.infinispan.loaders.bdbje;
 
 import com.sleepycat.bind.serial.StoredClassCatalog;
-import com.sleepycat.collections.CurrentTransaction;
 import com.sleepycat.collections.StoredMap;
 import com.sleepycat.collections.StoredSortedMap;
-import com.sleepycat.je.Cursor;
 import com.sleepycat.je.Database;
-import com.sleepycat.je.DatabaseEntry;
 import com.sleepycat.je.DatabaseException;
 import com.sleepycat.je.Environment;
 import com.sleepycat.je.EnvironmentConfig;
 import com.sleepycat.je.JEVersion;
-import com.sleepycat.je.OperationStatus;
-import com.sleepycat.je.Transaction;
 import com.sleepycat.util.ExceptionUnwrapper;
-import org.infinispan.Cache;
-import org.infinispan.container.entries.InternalCacheEntry;
-import org.infinispan.loaders.AbstractCacheStore;
-import org.infinispan.loaders.CacheLoaderConfig;
-import org.infinispan.loaders.CacheLoaderException;
-import org.infinispan.loaders.CacheLoaderMetadata;
+
+import org.infinispan.loaders.bdbje.configuration.BdbjeCacheStoreConfiguration;
 import org.infinispan.loaders.bdbje.logging.Log;
-import org.infinispan.loaders.modifications.Modification;
-import org.infinispan.commons.marshall.StreamingMarshaller;
-import org.infinispan.transaction.xa.GlobalTransaction;
-import org.infinispan.commons.util.ReflectionUtil;
-import org.infinispan.commons.util.CollectionFactory;
+import org.infinispan.marshall.core.MarshalledEntry;
+import org.infinispan.metadata.InternalMetadata;
+import org.infinispan.persistence.TaskContextImpl;
+import org.infinispan.persistence.spi.AdvancedLoadWriteStore;
+import org.infinispan.persistence.spi.InitializationContext;
+import org.infinispan.persistence.spi.PersistenceException;
+import org.infinispan.commons.util.FileLookupFactory;
+import org.infinispan.commons.util.Util;
+import org.infinispan.executors.ExecutorAllCompletionService;
 import org.infinispan.util.logging.LogFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.ObjectInput;
-import java.io.ObjectOutput;
-import java.util.HashSet;
-import java.util.Iterator;
+import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Properties;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
 
 /**
  * An Oracle SleepyCat JE implementation of a {@link org.infinispan.loaders.CacheStore}.  <p/>This implementation uses
@@ -60,117 +55,111 @@ import java.util.Set;
  *
  * @author Adrian Cole
  * @author Manik Surtani
+ * @author Eugene Scripnik
  * @since 4.0
  */
-@CacheLoaderMetadata(configurationClass = BdbjeCacheStoreConfig.class)
-public class BdbjeCacheStore extends AbstractCacheStore {
+public class BdbjeCacheStore implements AdvancedLoadWriteStore {
 
-   private static final Log log =
-         LogFactory.getLog(BdbjeCacheStore.class, Log.class);
+   private static final Log log = LogFactory.getLog(BdbjeCacheStore.class, Log.class);
    private static final boolean trace = log.isTraceEnabled();
-
-   private BdbjeCacheStoreConfig cfg;
 
    private Environment env;
    private StoredClassCatalog catalog;
    private Database cacheDb;
    private Database expiryDb;
-   private StoredMap<Object, InternalCacheEntry> cacheMap;
-   private StoredSortedMap<Long, Object> expiryMap;
-
-
-   private PreparableTransactionRunner transactionRunner;
-   private Map<GlobalTransaction, Transaction> txnMap;
-   private CurrentTransaction currentTransaction;
+   private StoredMap<byte[], byte[]> cacheMap;
+   private StoredSortedMap<Long, byte[]> expiryMap;
+   private BdbjeCacheStoreConfiguration configuration;
+   private InitializationContext ctx;
    private BdbjeResourceFactory factory;
 
-   /**
-    * {@inheritDoc} This implementation expects config to be an instance of {@link BdbjeCacheStoreConfig} <p /> note
-    * that the <code>m</code> is not currently used as SleepyCat has its own efficient solution.
-    *
-    * @see BdbjeCacheStoreConfig
-    */
    @Override
-   public void init(CacheLoaderConfig config, Cache<?, ?> cache, StreamingMarshaller m) throws CacheLoaderException {
-      BdbjeCacheStoreConfig cfg = (BdbjeCacheStoreConfig) config;
-      init(cfg, new BdbjeResourceFactory(cfg), cache, m);
-   }
-
-   void init(BdbjeCacheStoreConfig cfg, BdbjeResourceFactory factory, Cache<?, ?> cache, StreamingMarshaller m) throws CacheLoaderException {
-      if (trace) log.trace("initializing BdbjeCacheStore");
+   public void init(InitializationContext ctx) {
+      this.ctx = ctx;
+      this.configuration = ctx.getConfiguration();
+      this.factory = new BdbjeResourceFactory(configuration);
       printLicense();
-      super.init(cfg, cache, m);
-      this.cfg = cfg;
-      this.factory = factory;
    }
-
-   /**
-    * {@inheritDoc}
-    *
-    * @return {@link BdbjeCacheStoreConfig}
-    */
-   @Override
-   public Class<? extends CacheLoaderConfig> getConfigurationClass() {
-      return org.infinispan.loaders.bdbje.BdbjeCacheStoreConfig.class;
-   }
-
+   
    /**
     * {@inheritDoc} Validates configuration, configures and opens the {@link Environment}, then {@link
     * org.infinispan.loaders.bdbje.BdbjeCacheStore#openSleepyCatResources() opens the databases}.  When this is
     * finished, transactional and purging services are instantiated.
     */
    @Override
-   public void start() throws CacheLoaderException {
+   public void start() {
       if (trace) log.trace("starting BdbjeCacheStore");
 
       openSleepyCatResources();
-      openTransactionServices();
-      super.start();
-
       log.debugf("started cache store %s", this);
-   }
-
-   private void openTransactionServices() {
-      txnMap = CollectionFactory.makeConcurrentMap(64, getConcurrencyLevel());
-      currentTransaction = factory.createCurrentTransaction(env);
-      transactionRunner = factory.createPreparableTransactionRunner(env);
    }
 
    /**
     * Opens the SleepyCat environment and all databases.  A {@link StoredMap} instance is provided which persists the
     * CacheStore.
     */
-   private void openSleepyCatResources() throws CacheLoaderException {
-      if (trace) log.tracef("creating je environment with home dir %s", cfg.getLocation());
+   private void openSleepyCatResources() {
+      if (trace) log.tracef("creating je environment with home dir %s", configuration.location());
+      String cacheName = ctx.getCache().getName();
+      
+      String cacheDbName = cacheName;
+      if (configuration.cacheDbNamePrefix() != null) {
+         cacheDbName = configuration.cacheDbNamePrefix() + "_" + cacheName;
+	  }
+      
+      String expiryDbName = cacheName + "_expiry";
+      if (configuration.expiryDbPrefix() != null) {
+         expiryDbName = configuration.expiryDbPrefix() + "_expiry";
+      }
 
-      cfg.setCacheName(cache.getName());
-      if (cfg.getCatalogDbName() == null)
-         cfg.setCatalogDbName(cfg.getCacheDbName() + "_class_catalog");
+      String catalogDbName = configuration.catalogDbName();
+	  if (catalogDbName == null) {
+		 catalogDbName = cacheDbName + "_class_catalog";
+      }
 
-      File location = verifyOrCreateEnvironmentDirectory(new File(cfg.getLocation()));
+      File location = verifyOrCreateEnvironmentDirectory(new File(configuration.location()));
       try {
-         env = factory.createEnvironment(location, cfg.readEnvironmentProperties());
-         cacheDb = factory.createDatabase(env, cfg.getCacheDbName());
-         Database catalogDb = factory.createDatabase(env, cfg.getCatalogDbName());
-         expiryDb = factory.createDatabase(env, cfg.getExpiryDbName());
+         env = factory.createEnvironment(location, readEnvironmentProperties());
+         cacheDb = factory.createDatabase(env, cacheDbName);
+         Database catalogDb = factory.createDatabase(env, catalogDbName);
+         expiryDb = factory.createDatabase(env, expiryDbName);
          catalog = factory.createStoredClassCatalog(catalogDb);
-         cacheMap = factory.createStoredMapViewOfDatabase(cacheDb, catalog, marshaller);
-         expiryMap = factory.createStoredSortedMapForKeyExpiry(expiryDb, catalog, marshaller);
+         cacheMap = factory.createStoredMapViewOfDatabase(cacheDb, catalog, ctx.getMarshaller());
+         expiryMap = factory.createStoredSortedMapForKeyExpiry(expiryDb, catalog, ctx.getMarshaller());
       } catch (DatabaseException e) {
          throw convertToCacheLoaderException("could not open sleepycat je resource", e);
       }
    }
 
+   private Properties readEnvironmentProperties() {
+      String fileName = configuration.environmentPropertiesFile();
+      if (fileName == null || fileName.trim().isEmpty()) return null;
+      InputStream i = FileLookupFactory.newInstance().lookupFile(fileName, factory.getClass().getClassLoader());
+      if (i != null) {
+         Properties p = new Properties();
+         try {
+            p.load(i);
+         } catch (IOException ioe) {
+            throw new PersistenceException("Unable to read environment properties file " + fileName, ioe);
+         } finally {
+            Util.close(i);
+         }
+         return p;
+      } else {
+         return null;
+      }
+   }
+
    // not private so that this can be unit tested
 
-   File verifyOrCreateEnvironmentDirectory(File location) throws CacheLoaderException {
+   File verifyOrCreateEnvironmentDirectory(File location) {
       if (!location.exists()) {
          boolean created = location.mkdirs();
-         if (!created) throw new CacheLoaderException("Unable to create cache loader location " + location);
+         if (!created) throw new PersistenceException("Unable to create cache loader location " + location);
 
       }
       if (!location.isDirectory()) {
-         throw new CacheLoaderException("Cache loader location [" + location + "] is not a directory!");
+         throw new PersistenceException("Cache loader location [" + location + "] is not a directory!");
       }
       return location;
    }
@@ -181,21 +170,13 @@ public class BdbjeCacheStore extends AbstractCacheStore {
     * will ensure the databases are also.
     */
    @Override
-   public void stop() throws CacheLoaderException {
+   public void stop() {
       if (trace) log.trace("stopping BdbjeCacheStore");
-      super.stop();
-      closeTransactionServices();
       closeSleepyCatResources();
       log.debugf("started cache store %s", this);
    }
 
-   private void closeTransactionServices() {
-      transactionRunner = null;
-      currentTransaction = null;
-      txnMap = null;
-   }
-
-   private void closeSleepyCatResources() throws CacheLoaderException {
+   private void closeSleepyCatResources() {
       cacheMap = null;
       expiryMap = null;
       closeDatabases();
@@ -228,160 +209,103 @@ public class BdbjeCacheStore extends AbstractCacheStore {
       expiryDb = null;
    }
 
-   private void closeEnvironment() throws CacheLoaderException {
+   private void closeEnvironment() {
       if (env != null) {
          try {
             env.close();
          } catch (DatabaseException e) {
-            throw new CacheLoaderException("Unexpected exception closing cacheStore", e);
+            throw new PersistenceException("Unexpected exception closing cacheStore", e);
          }
       }
       env = null;
    }
 
-   /**
-    * {@inheritDoc} delegates to {@link BdbjeCacheStore#applyModifications(java.util.List)}, if
-    * <code>isOnePhase</code>. Otherwise, delegates to {@link BdbjeCacheStore#prepare(java.util.List,
-    * org.infinispan.transaction.xa.GlobalTransaction)}
-    */
    @Override
-   public void prepare(List<? extends Modification> mods, GlobalTransaction tx, boolean isOnePhase) throws CacheLoaderException {
-      if (isOnePhase) {
-         applyModifications(mods);
-      } else {
-         prepare(mods, tx);
-      }
-   }
-
-   /**
-    * Perform the <code>mods</code> atomically by creating a {@link ModificationsTransactionWorker worker} and invoking
-    * them in {@link PreparableTransactionRunner#run(com.sleepycat.collections.TransactionWorker)}.
-    *
-    * @param mods actions to perform atomically
-    * @throws CacheLoaderException on problems during the transaction
-    */
-   @Override
-   protected void applyModifications(List<? extends Modification> mods) throws CacheLoaderException {
-      if (trace) log.trace("performing one phase transaction");
+   public void process(KeyFilter filter, CacheLoaderTask task, Executor executor, boolean fetchValue, boolean fetchMetadata) {
+      int batchSize = 100;
+      ExecutorAllCompletionService eacs = new ExecutorAllCompletionService(executor);
+      TaskContextImpl taskContext = new TaskContextImpl();
+      List<byte[]> keys = new ArrayList<byte[]>(batchSize);
       try {
-         transactionRunner.run(new ModificationsTransactionWorker(this, mods));
-      } catch (Exception caught) {
-         throw convertToCacheLoaderException("Problem committing modifications: " + mods, caught);
-      }
-   }
-
-   /**
-    * Looks up the {@link Transaction SleepyCat transaction} associated with <code>tx</code>.  Creates a {@link
-    * org.infinispan.loaders.bdbje.ModificationsTransactionWorker} instance from <code>mods</code>.  Then prepares the
-    * transaction via {@link PreparableTransactionRunner#prepare(com.sleepycat.collections.TransactionWorker)}.
-    * Finally, it invalidates {@link com.sleepycat.collections.CurrentTransaction#getTransaction()} so that no other
-    * thread can accidentally commit this.
-    *
-    * @param mods modifications to be applied
-    * @param tx   transaction identifier
-    * @throws CacheLoaderException in the event of problems writing to the store
-    */
-   protected void prepare(List<? extends Modification> mods, GlobalTransaction tx) throws CacheLoaderException {
-      if (trace) log.tracef("preparing transaction %s", tx);
-      try {
-         transactionRunner.prepare(new ModificationsTransactionWorker(this, mods));
-         Transaction txn = currentTransaction.getTransaction();
-         if (trace) log.tracef("transaction %s == sleepycat transaction %s", tx, txn);
-         txnMap.put(tx, txn);
-         try {
-            // Very messy way to clean up a BDBJE thread local.
-            ThreadLocal<Object> tl = (ThreadLocal<Object>) ReflectionUtil.getValue(currentTransaction, "localTrans");
-            tl.remove();
-         } catch (Exception e) {
-            // Unable to remove thread local.
-            log.warn("Unable to clean up BDBJE transaction thread locals.");
-            throw convertToCacheLoaderException("Unable to clean up BDBJE transaction", e);
+         for (byte[] key : cacheMap.keySet()) {
+            if (taskContext.isStopped()) {
+               break;
+            }
+            keys.add(key);
+            if (keys.size() == batchSize) {
+               submitProcessTask(filter, task, eacs, taskContext, keys);
+               keys = new ArrayList<byte[]>(batchSize);
+            }
+         }
+         if (!keys.isEmpty() && !taskContext.isStopped()) {
+             submitProcessTask(filter, task, eacs, taskContext, keys);
+         }
+         
+         eacs.waitUntilAllCompleted();
+         if (eacs.isExceptionThrown()) {
+             throw new PersistenceException("Execution exception!", eacs.getFirstException());
          }
       } catch (Exception e) {
-         throw convertToCacheLoaderException("Problem preparing transaction", e);
+         throw convertToCacheLoaderException("error processing entries", e);
       }
    }
 
-
-   /**
-    * {@inheritDoc}
-    * <p/>
-    * This implementation calls {@link BdbjeCacheStore#completeTransaction(org.infinispan.transaction.xa.GlobalTransaction,
-    * boolean)} completeTransaction} with an argument of false.
-    */
-   @Override
-   public void rollback(GlobalTransaction tx) {
-      try {
-         completeTransaction(tx, false);
-      } catch (Exception e) {
-         log.rollingBackAfterError(e);
-      }
-   }
-
-   /**
-    * {@inheritDoc}
-    * <p/>
-    * This implementation calls {@link BdbjeCacheStore#completeTransaction(org.infinispan.transaction.xa.GlobalTransaction,
-    * boolean)} completeTransaction} with an argument of true.
-    */
-   @Override
-   public void commit(GlobalTransaction tx) throws CacheLoaderException {
-      completeTransaction(tx, true);
-   }
-
-   /**
-    * Looks up the SleepyCat transaction associated with the parameter <code>tx</code>.  If there is no associated
-    * sleepycat transaction, an error is logged.
-    *
-    * @param tx     java transaction used to lookup a SleepyCat transaction
-    * @param commit true to commit false to abort
-    * @throws CacheLoaderException if there are problems committing or aborting the transaction
-    */
-   protected void completeTransaction(GlobalTransaction tx, boolean commit) throws CacheLoaderException {
-      Transaction txn = txnMap.remove(tx);
-      if (txn != null) {
-         if (trace) log.tracef("%s sleepycat transaction %s", commit ? "committing" : "aborting", txn);
-         try {
-            if (commit)
-               txn.commit();
-            else
-               txn.abort();
-         } catch (Exception caught) {
-            throw convertToCacheLoaderException("Problem completing transaction", caught);
+   private void submitProcessTask(final KeyFilter filter, final CacheLoaderTask task, ExecutorAllCompletionService eacs,
+         final TaskContextImpl taskContext, final List<byte[]> keys) {
+      eacs.submit(new Callable<Void>() {
+         @Override
+         public Void call() throws Exception {
+            try {
+               long now = ctx.getTimeService().wallClockTime();
+               for (byte[] keyBytes : keys) {
+                  if (taskContext.isStopped()) {
+                      break;
+                  }
+                  Object key = unmarshall(keyBytes);
+                  if (filter == null || filter.shouldLoadKey(key)) {
+                     MarshalledEntry unmarshall = (MarshalledEntry) unmarshall(cacheMap.get(keyBytes));
+                     InternalMetadata metadata = unmarshall.getMetadata();
+                     if (metadata == null || !metadata.isExpired(now)) {
+                         task.processEntry(unmarshall, taskContext);
+                     }
+                  }
+               }
+            } catch (Exception e) {
+               log.errorExecutingParallelStoreTask(e);
+               throw e;
+            }
+            return null;
          }
-      } else {
-         if (trace) log.tracef("no sleepycat transaction associated  transaction %s", tx);
+      });
+   }
+
+   private boolean isExpired(MarshalledEntry me, long now) {
+      return me.getMetadata() != null && me.getMetadata().isExpired(now);
+   }
+
+   @Override
+   public int size() {
+      return cacheMap.size();
+   }
+
+   @Override
+   public boolean contains(Object key) {
+      try {
+         return cacheMap.containsKey(key);
+      } catch (RuntimeException caught) {
+         throw convertToCacheLoaderException("error checking key " + key, caught);
       }
    }
 
-   /**
-    * commits or aborts the {@link com.sleepycat.collections.CurrentTransaction#getTransaction() current transaction}
-    *
-    * @param commit true to commit, false to abort
-    * @throws CacheLoaderException if there was a problem completing the transaction
-    */
-   private void completeCurrentTransaction(boolean commit) throws CacheLoaderException {
-      try {
-         if (trace)
-            log.tracef("%s current sleepycat transaction %s", commit ? "committing" : "aborting", currentTransaction.getTransaction());
-         if (commit)
-            currentTransaction.commitTransaction();
-         else
-            currentTransaction.abortTransaction();
-      } catch (Exception caught) {
-         throw convertToCacheLoaderException("Problem completing transaction", caught);
-      }
-   }
 
    /**
     * {@inheritDoc} This implementation delegates to {@link StoredMap#remove(Object)}
     */
    @Override
-   public boolean remove(Object key) throws CacheLoaderException {
+   public boolean delete(Object key) {
       try {
          if (cacheMap.containsKey(key)) {
-            cacheMap.remove(key);
-            return true;
+            return cacheMap.keySet().remove(key);
          }
          return false;
       } catch (RuntimeException caught) {
@@ -394,15 +318,18 @@ public class BdbjeCacheStore extends AbstractCacheStore {
     * not be returned.
     */
    @Override
-   public InternalCacheEntry load(Object key) throws CacheLoaderException {
+   public MarshalledEntry load(Object key) {
       try {
-         InternalCacheEntry s = cacheMap.get(key);
-         if (s != null && s.isExpired(timeService.wallClockTime())) {
-            s = null;
+         MarshalledEntry me = (MarshalledEntry) unmarshall(cacheMap.get(marshall(key)));
+         if (me == null) return null;
+
+         InternalMetadata meta = me.getMetadata();
+         if (meta != null && meta.isExpired(ctx.getTimeService().wallClockTime())) {
+            return null;
          }
-         return s;
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error loading key " + key, caught);
+         return me;
+      } catch (Exception e) {
+         throw convertToCacheLoaderException("error loading key " + key, e);
       }
    }
 
@@ -410,153 +337,41 @@ public class BdbjeCacheStore extends AbstractCacheStore {
     * {@inheritDoc} This implementation delegates to {@link StoredMap#put(Object, Object)}
     */
    @Override
-   public void store(InternalCacheEntry ed) throws CacheLoaderException {
+   public void write(MarshalledEntry entry) {
       try {
-         cacheMap.put(ed.getKey(), ed);
-         if (ed.canExpire())
-            addNewExpiry(ed);
-      } catch (IOException caught) {
-         throw convertToCacheLoaderException("error storing entry " + ed, caught);
+         cacheMap.put(marshall(entry.getKey()), marshall(entry));
+         InternalMetadata meta = entry.getMetadata();
+         if (meta != null && meta.expiryTime() > -1) {
+            addNewExpiry(entry);
+         }
+      } catch (Exception e) {
+         throw convertToCacheLoaderException("error storing entry " + entry, e);
       }
    }
 
-
-   private void addNewExpiry(InternalCacheEntry entry) throws IOException {
-      long expiry = entry.getExpiryTime();
-      if (entry.getMaxIdle() > 0) {
-         // Coding getExpiryTime() for transient entries has the risk of being a moving target
-         // which could lead to unexpected results, hence, InternalCacheEntry calls are required
-         expiry = entry.getMaxIdle() + timeService.wallClockTime();
+   private void addNewExpiry(MarshalledEntry entry) throws IOException, InterruptedException {
+      long expiry = entry.getMetadata().expiryTime();
+      long maxIdle = entry.getMetadata().maxIdle();
+      if (maxIdle > 0) {
+         // Coding getExpiryTime() for transient entries has the risk of
+         // being a moving target
+         // which could lead to unexpected results, hence, InternalCacheEntry
+         // calls are required
+         expiry = maxIdle + System.currentTimeMillis();
       }
-      Long at = expiry;
-      Object key = entry.getKey();
-      expiryMap.put(at, key);
+      expiryMap.put(expiry, marshall(entry.getKey()));
    }
 
    /**
     * {@inheritDoc} This implementation delegates to {@link StoredMap#clear()}
     */
    @Override
-   public void clear() throws CacheLoaderException {
+   public void clear() {
       try {
          cacheMap.clear();
          expiryMap.clear();
       } catch (RuntimeException caught) {
          throw convertToCacheLoaderException("error clearing store", caught);
-      }
-   }
-
-   /**
-    * {@inheritDoc} This implementation returns a Set from {@link StoredMap#values()}
-    */
-   @Override
-   public Set<InternalCacheEntry> loadAll() throws CacheLoaderException {
-      try {
-         return new HashSet<InternalCacheEntry>(cacheMap.values());
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error loading all entries", caught);
-      }
-   }
-
-   @Override
-   public Set<InternalCacheEntry> load(int numEntries) throws CacheLoaderException {
-      if (numEntries < 0) return loadAll();
-      try {
-         Set<InternalCacheEntry> s = new HashSet<InternalCacheEntry>(numEntries);
-         for (Iterator<InternalCacheEntry> i = cacheMap.values().iterator(); i.hasNext() && s.size() < numEntries;)
-            s.add(i.next());
-         return s;
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error loading all entries", caught);
-      }
-   }
-
-   @Override
-   public Set<Object> loadAllKeys(Set<Object> keysToExclude) throws CacheLoaderException {
-      try {
-         Set<Object> s = new HashSet<Object>();
-         for (Object o: cacheMap.keySet()) if (keysToExclude == null || !keysToExclude.contains(o)) s.add(o);
-         return s;
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error loading all entries", caught);
-      }
-   }
-
-   /**
-    * {@inheritDoc} This implementation reads the number of entries to load from the stream, then begins a transaction.
-    * During that transaction, the cachestore is cleared and replaced with entries from the stream.  If there are any
-    * errors during the process, the entire transaction is rolled back.  Deadlock handling is not addressed, as there
-    * is no means to rollback reads from the input stream.
-    *
-    * @see BdbjeCacheStore#toStream(java.io.ObjectOutput)
-    */
-   @Override
-   public void fromStream(ObjectInput ois) throws CacheLoaderException {
-      try {
-         currentTransaction.beginTransaction(null);
-         for (Database db : new Database[]{cacheDb, expiryDb}) {
-            long recordCount = ois.readLong();
-            log.debugf("clearing and reading %s records from stream", recordCount);
-            Cursor cursor = null;
-            try {
-               cursor = db.openCursor(currentTransaction.getTransaction(), null);
-               for (int i = 0; i < recordCount; i++) {
-                  byte[] keyBytes = (byte[]) ois.readObject();
-                  byte[] dataBytes = (byte[]) ois.readObject();
-
-                  DatabaseEntry key = new DatabaseEntry(keyBytes);
-                  DatabaseEntry data = new DatabaseEntry(dataBytes);
-                  cursor.put(key, data);
-               }
-            } finally {
-               if (cursor != null) cursor.close();
-            }
-         }
-         completeCurrentTransaction(true);
-      } catch (Exception caught) {
-         completeCurrentTransaction(false);
-         clear();
-         throw convertToCacheLoaderException("Problems reading from stream", caught);
-      }
-   }
-
-   /**
-    * Writes the current count of cachestore entries followed by a pair of byte[]s corresponding to the SleepyCat
-    * binary representation of {@link InternalCacheEntry#getKey() key} {@link InternalCacheEntry value}.
-    * <p/>
-    * This implementation holds a transaction open to ensure that we see no new records added while iterating.
-    */
-   @Override
-   public void toStream(ObjectOutput oos) throws CacheLoaderException {
-      try {
-         currentTransaction.beginTransaction(null);
-         for (Database db : new Database[]{cacheDb, expiryDb}) {
-            long recordCount = db.count();
-            oos.writeLong(recordCount);
-            if (trace) log.tracef("writing %s records to stream", recordCount);
-            Cursor cursor = null;
-            try {
-               cursor = db.openCursor(currentTransaction.getTransaction(), null);
-               DatabaseEntry key = new DatabaseEntry();
-               DatabaseEntry data = new DatabaseEntry();
-               int recordsWritten = 0;
-               while (cursor.getNext(key, data, null) ==
-                     OperationStatus.SUCCESS) {
-                  oos.writeObject(key.getData());
-                  oos.writeObject(data.getData());
-                  recordsWritten++;
-               }
-               if (trace) log.tracef("wrote %s records to stream", recordsWritten);
-               if (recordsWritten != recordCount)
-                  log.unexpectedNumberRecordsWritten(recordCount, recordsWritten);
-            } finally {
-               if (cursor != null) cursor.close();
-            }
-         }
-         completeCurrentTransaction(true);
-      } catch (Exception caught) {
-         completeCurrentTransaction(false);
-         throw convertToCacheLoaderException("Problems writing to stream", caught);
       }
    }
 
@@ -570,26 +385,46 @@ public class BdbjeCacheStore extends AbstractCacheStore {
     * @param caught  exception to parse
     * @return CacheLoaderException with the correct cause
     */
-   CacheLoaderException convertToCacheLoaderException(String message, Exception caught) {
+   PersistenceException convertToCacheLoaderException(String message, Exception caught) {
       caught = ExceptionUnwrapper.unwrap(caught);
-      return (caught instanceof CacheLoaderException) ? (CacheLoaderException) caught :
-            new CacheLoaderException(message, caught);
+      return (caught instanceof PersistenceException) ? (PersistenceException) caught :
+            new PersistenceException(message, caught);
    }
 
    /**
     * Iterate through {@link com.sleepycat.collections.StoredMap#entrySet()} and remove, if expired.
     */
    @Override
-   protected void purgeInternal() throws CacheLoaderException {
+   public void purge(Executor threadPool, PurgeListener listener) {
       try {
-         Map<Long, Object> expired = expiryMap.headMap(timeService.wallClockTime(), true);
-         for (Map.Entry<Long, Object> entry : expired.entrySet()) {
+         Map<Long, byte[]> expired = expiryMap.headMap(ctx.getTimeService().wallClockTime(), true);
+         for (Map.Entry<Long, byte[]> entry : expired.entrySet()) {
             expiryMap.remove(entry.getKey());
-            cacheMap.remove(entry.getValue());
+
+            byte[] keyBytes = entry.getValue();
+            MarshalledEntry me = (MarshalledEntry) unmarshall(cacheMap.get(keyBytes));
+            InternalMetadata metadata = me.getMetadata();
+            // can happen if we update entry, two expiry pairs will exist in map
+            // so we should always check real expiration time
+            if (metadata != null && metadata.isExpired(ctx.getTimeService().wallClockTime())) {
+                cacheMap.remove(keyBytes);
+                listener.entryPurged(keyBytes);
+            }
          }
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error purging expired entries", caught);
+      } catch (Exception e) {
+         throw convertToCacheLoaderException("error purging expired entries", e);
       }
+   }
+
+   private byte[] marshall(Object entry) throws IOException, InterruptedException {
+      return ctx.getMarshaller().objectToByteBuffer(entry);
+   }
+
+   private Object unmarshall(byte[] bytes) throws IOException, ClassNotFoundException {
+      if (bytes == null)
+         return null;
+
+      return ctx.getMarshaller().objectFromByteBuffer(bytes);
    }
 
    /**

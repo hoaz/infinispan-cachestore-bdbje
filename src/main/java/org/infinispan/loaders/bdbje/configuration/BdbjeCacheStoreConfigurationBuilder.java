@@ -1,7 +1,7 @@
 package org.infinispan.loaders.bdbje.configuration;
 
 import org.infinispan.configuration.cache.AbstractStoreConfigurationBuilder;
-import org.infinispan.configuration.cache.LoadersConfigurationBuilder;
+import org.infinispan.configuration.cache.PersistenceConfigurationBuilder;
 import org.infinispan.loaders.bdbje.BdbjeCacheStore;
 import org.infinispan.commons.util.TypedProperties;
 
@@ -21,7 +21,7 @@ public class BdbjeCacheStoreConfigurationBuilder extends
    private String expiryDbPrefix;
    private String environmentPropertiesFile;
 
-   public BdbjeCacheStoreConfigurationBuilder(LoadersConfigurationBuilder builder) {
+   public BdbjeCacheStoreConfigurationBuilder(PersistenceConfigurationBuilder builder) {
       super(builder);
    }
 
@@ -121,9 +121,9 @@ public class BdbjeCacheStoreConfigurationBuilder extends
    @Override
    public BdbjeCacheStoreConfiguration create() {
       return new BdbjeCacheStoreConfiguration(location, lockAcquistionTimeout, maxTxRetries, cacheDbNamePrefix,
-            catalogDbName, expiryDbPrefix, environmentPropertiesFile, purgeOnStartup, purgeSynchronously,
-            purgerThreads, fetchPersistentState, ignoreModifications, TypedProperties.toTypedProperties(properties),
-            async.create(), singletonStore.create());
+            catalogDbName, expiryDbPrefix, environmentPropertiesFile, purgeOnStartup,
+            fetchPersistentState, ignoreModifications, async.create(), singletonStore.create(),
+            preload, shared, TypedProperties.toTypedProperties(properties));
    }
 
    @Override
@@ -142,7 +142,6 @@ public class BdbjeCacheStoreConfigurationBuilder extends
       ignoreModifications = template.ignoreModifications();
       properties = template.properties();
       purgeOnStartup = template.purgeOnStartup();
-      purgeSynchronously = template.purgeSynchronously();
       async.read(template.async());
       singletonStore.read(template.singletonStore());
 

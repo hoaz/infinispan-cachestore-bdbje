@@ -1,16 +1,18 @@
 package org.infinispan.loaders.bdbje;
 
+import com.sleepycat.bind.ByteArrayBinding;
 import com.sleepycat.bind.EntryBinding;
-import com.sleepycat.bind.serial.SerialBinding;
 import com.sleepycat.bind.serial.StoredClassCatalog;
+import com.sleepycat.bind.tuple.LongBinding;
 import com.sleepycat.collections.CurrentTransaction;
 import com.sleepycat.collections.StoredMap;
 import com.sleepycat.collections.StoredSortedMap;
 import com.sleepycat.je.*;
 import com.sleepycat.util.ExceptionUnwrapper;
-import org.infinispan.container.entries.InternalCacheEntry;
+
 import org.infinispan.commons.CacheException;
 import org.infinispan.commons.marshall.StreamingMarshaller;
+import org.infinispan.loaders.bdbje.configuration.BdbjeCacheStoreConfiguration;
 import org.infinispan.util.logging.Log;
 import org.infinispan.util.logging.LogFactory;
 
@@ -28,9 +30,9 @@ public class BdbjeResourceFactory {
     private static final Log log = LogFactory.getLog(BdbjeResourceFactory.class);
     private static final boolean trace = log.isTraceEnabled();
 
-    private BdbjeCacheStoreConfig config;
+    private BdbjeCacheStoreConfiguration config;
 
-    public BdbjeResourceFactory(BdbjeCacheStoreConfig config) {
+    public BdbjeResourceFactory(BdbjeCacheStoreConfiguration config) {
         this.config = config;
     }
 
@@ -39,7 +41,7 @@ public class BdbjeResourceFactory {
      *         BdbjeCacheStoreConfig#getMaxTxRetries()} times.
      */
     public PreparableTransactionRunner createPreparableTransactionRunner(Environment env) {
-        return new PreparableTransactionRunner(env, config.getMaxTxRetries(), null);
+        return new PreparableTransactionRunner(env, config.maxTxRetries(), null);
     }
 
     public CurrentTransaction createCurrentTransaction(Environment env) {
@@ -57,7 +59,7 @@ public class BdbjeResourceFactory {
         EnvironmentConfig envConfig = environmentProperties == null ? new EnvironmentConfig() : new EnvironmentConfig(environmentProperties);
         envConfig.setAllowCreate(true);
         envConfig.setTransactional(true);
-        envConfig.setLockTimeout(config.getLockAcquistionTimeout(), TimeUnit.MILLISECONDS);
+        envConfig.setLockTimeout(config.lockAcquisitionTimeout(), TimeUnit.MILLISECONDS);
         if (trace) log.tracef("opening or creating je environment at %s", envLocation);
         Environment env = new Environment(envLocation, envConfig);
         log.debugf("opened je environment at %s", envLocation);
@@ -66,7 +68,7 @@ public class BdbjeResourceFactory {
 
     public StoredClassCatalog createStoredClassCatalog(Database catalogDb) throws DatabaseException {
         StoredClassCatalog catalog = new StoredClassCatalog(catalogDb);
-        log.debugf("created stored class catalog from database %s", config.getCatalogDbName());
+        log.debugf("created stored class catalog from database %s", config.catalogDbName());
         return catalog;
     }
 
@@ -94,12 +96,11 @@ public class BdbjeResourceFactory {
      * @throws com.sleepycat.je.DatabaseException
      *          if the StoredMap cannot be opened.
      */
-    public StoredMap<Object, InternalCacheEntry> createStoredMapViewOfDatabase(Database database, StoredClassCatalog classCatalog, StreamingMarshaller m) throws DatabaseException {
-        EntryBinding<Object> storedEntryKeyBinding =
-                new SerialBinding<Object>(classCatalog, Object.class);
-        EntryBinding<InternalCacheEntry> storedEntryValueBinding = new InternalCacheEntryBinding(m);
+    public StoredMap<byte[], byte[]> createStoredMapViewOfDatabase(Database database, StoredClassCatalog classCatalog, StreamingMarshaller marshaller) throws DatabaseException {
+        EntryBinding<byte[]> storedEntryKeyBinding = new ByteArrayBinding();
+        EntryBinding<byte[]> storedEntryValueBinding = new ByteArrayBinding();
         try {
-            return new StoredMap<Object, InternalCacheEntry>(database,
+            return new StoredMap<byte[], byte[]>(database,
                     storedEntryKeyBinding, storedEntryValueBinding, true);
         } catch (Exception caught) {
             caught = ExceptionUnwrapper.unwrap(caught);
@@ -116,13 +117,11 @@ public class BdbjeResourceFactory {
      * @throws com.sleepycat.je.DatabaseException
      *          if the StoredMap cannot be opened.
      */
-    public StoredSortedMap<Long, Object> createStoredSortedMapForKeyExpiry(Database database, StoredClassCatalog classCatalog, StreamingMarshaller marshaller) throws DatabaseException {
-        EntryBinding<Long> expiryKeyBinding =
-                new SerialBinding<Long>(classCatalog, Long.class);
-        EntryBinding<Object> expiryValueBinding =
-                new SerialBinding<Object>(classCatalog, Object.class);
+    public StoredSortedMap<Long, byte[]> createStoredSortedMapForKeyExpiry(Database database, StoredClassCatalog classCatalog, StreamingMarshaller marshaller) throws DatabaseException {
+        EntryBinding<Long> expiryKeyBinding = new LongBinding();
+        EntryBinding<byte[]> expiryValueBinding = new ByteArrayBinding();
         try {
-            return new StoredSortedMap<Long, Object>(database,
+            return new StoredSortedMap<Long, byte[]>(database,
                     expiryKeyBinding, expiryValueBinding, true);
         } catch (Exception caught) {
             caught = ExceptionUnwrapper.unwrap(caught);

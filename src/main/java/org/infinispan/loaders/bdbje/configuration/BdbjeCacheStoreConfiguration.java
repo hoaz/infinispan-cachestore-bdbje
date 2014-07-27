@@ -1,17 +1,17 @@
 package org.infinispan.loaders.bdbje.configuration;
 
+import java.util.Properties;
+
 import org.infinispan.configuration.cache.AbstractStoreConfiguration;
 import org.infinispan.configuration.cache.AsyncStoreConfiguration;
-import org.infinispan.configuration.cache.LegacyConfigurationAdaptor;
-import org.infinispan.configuration.cache.LegacyLoaderAdapter;
 import org.infinispan.configuration.cache.SingletonStoreConfiguration;
-import org.infinispan.loaders.bdbje.BdbjeCacheStoreConfig;
+import org.infinispan.loaders.bdbje.BdbjeCacheStore;
 import org.infinispan.commons.configuration.BuiltBy;
-import org.infinispan.commons.util.TypedProperties;
+import org.infinispan.commons.configuration.ConfigurationFor;
 
 @BuiltBy(BdbjeCacheStoreConfigurationBuilder.class)
-public class BdbjeCacheStoreConfiguration extends AbstractStoreConfiguration implements
-      LegacyLoaderAdapter<BdbjeCacheStoreConfig> {
+@ConfigurationFor(BdbjeCacheStore.class)
+public class BdbjeCacheStoreConfiguration extends AbstractStoreConfiguration {
 
    private final String location;
    private final long lockAcquistionTimeout;
@@ -23,11 +23,10 @@ public class BdbjeCacheStoreConfiguration extends AbstractStoreConfiguration imp
 
    public BdbjeCacheStoreConfiguration(String location, long lockAcquistionTimeout, int maxTxRetries,
          String cacheDbNamePrefix, String catalogDbName, String expiryDbPrefix, String environmentPropertiesFile,
-         boolean purgeOnStartup, boolean purgeSynchronously, int purgerThreads, boolean fetchPersistentState,
-         boolean ignoreModifications, TypedProperties properties, AsyncStoreConfiguration asyncStoreConfiguration,
-         SingletonStoreConfiguration singletonStoreConfiguration) {
-      super(purgeOnStartup, purgeSynchronously, purgerThreads, fetchPersistentState, ignoreModifications, properties,
-            asyncStoreConfiguration, singletonStoreConfiguration);
+         boolean purgeOnStartup, boolean fetchPersistentState, boolean ignoreModifications,
+         AsyncStoreConfiguration async, SingletonStoreConfiguration singletonStore, boolean preload,
+         boolean shared, Properties properties) {
+      super(purgeOnStartup, fetchPersistentState, ignoreModifications, async, singletonStore, preload, shared, properties);
       this.location = location;
       this.lockAcquistionTimeout = lockAcquistionTimeout;
       this.maxTxRetries = maxTxRetries;
@@ -64,23 +63,6 @@ public class BdbjeCacheStoreConfiguration extends AbstractStoreConfiguration imp
 
    public String environmentPropertiesFile() {
       return environmentPropertiesFile;
-   }
-
-   @Override
-   public BdbjeCacheStoreConfig adapt() {
-      BdbjeCacheStoreConfig config = new BdbjeCacheStoreConfig();
-
-      LegacyConfigurationAdaptor.adapt(this, config);
-
-      config.setCacheDbNamePrefix(cacheDbNamePrefix);
-      config.setCatalogDbName(catalogDbName);
-      config.setEnvironmentPropertiesFile(environmentPropertiesFile);
-      config.setExpiryDbNamePrefix(expiryDbPrefix);
-      config.setLocation(location);
-      config.setLockAcquistionTimeout(lockAcquistionTimeout);
-      config.setMaxTxRetries(maxTxRetries);
-
-      return config;
    }
 
 }
