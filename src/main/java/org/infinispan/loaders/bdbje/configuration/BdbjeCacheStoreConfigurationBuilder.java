@@ -1,9 +1,9 @@
 package org.infinispan.loaders.bdbje.configuration;
 
+import org.infinispan.commons.util.TypedProperties;
 import org.infinispan.configuration.cache.AbstractStoreConfigurationBuilder;
 import org.infinispan.configuration.cache.PersistenceConfigurationBuilder;
 import org.infinispan.loaders.bdbje.BdbjeCacheStore;
-import org.infinispan.commons.util.TypedProperties;
 
 /**
  * BdbjeCacheStoreConfigurationBuilder. Configures a {@link BdbjeCacheStore}
@@ -128,7 +128,6 @@ public class BdbjeCacheStoreConfigurationBuilder extends
 
    @Override
    public BdbjeCacheStoreConfigurationBuilder read(BdbjeCacheStoreConfiguration template) {
-
       this.location = template.location();
       this.lockAcquistionTimeout = template.lockAcquisitionTimeout();
       this.maxTxRetries = template.maxTxRetries();
@@ -142,6 +141,8 @@ public class BdbjeCacheStoreConfigurationBuilder extends
       ignoreModifications = template.ignoreModifications();
       properties = template.properties();
       purgeOnStartup = template.purgeOnStartup();
+      preload = template.preload();
+      shared = template.shared();
       async.read(template.async());
       singletonStore.read(template.singletonStore());
 

@@ -291,9 +291,9 @@ public class BdbjeCacheStore implements AdvancedLoadWriteStore {
    @Override
    public boolean contains(Object key) {
       try {
-         return cacheMap.containsKey(key);
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error checking key " + key, caught);
+         return load(key) != null;
+      } catch (Exception e) {
+         throw convertToCacheLoaderException("error checking key " + key, e);
       }
    }
 
@@ -304,12 +304,9 @@ public class BdbjeCacheStore implements AdvancedLoadWriteStore {
    @Override
    public boolean delete(Object key) {
       try {
-         if (cacheMap.containsKey(key)) {
-            return cacheMap.keySet().remove(key);
-         }
-         return false;
-      } catch (RuntimeException caught) {
-         throw convertToCacheLoaderException("error removing key " + key, caught);
+         return cacheMap.keySet().remove(marshall(key));
+      } catch (Exception e) {
+         throw convertToCacheLoaderException("error removing key " + key, e);
       }
    }
 
@@ -408,7 +405,9 @@ public class BdbjeCacheStore implements AdvancedLoadWriteStore {
             // so we should always check real expiration time
             if (metadata != null && metadata.isExpired(ctx.getTimeService().wallClockTime())) {
                 cacheMap.remove(keyBytes);
-                listener.entryPurged(keyBytes);
+                if (listener != null) {
+                    listener.entryPurged(keyBytes);
+                }
             }
          }
       } catch (Exception e) {
