@@ -35,8 +35,7 @@ public class BdbjeParallelIterationTest extends ParallelIterationTest {
 
     @Override
     protected int numThreads() {
-        return KnownComponentNames.getDefaultThreads(KnownComponentNames.PERSISTENCE_EXECUTOR) + 1 /** caller's thread */
-        ;
+        return KnownComponentNames.getDefaultThreads(KnownComponentNames.PERSISTENCE_EXECUTOR);
     }
 
 }
